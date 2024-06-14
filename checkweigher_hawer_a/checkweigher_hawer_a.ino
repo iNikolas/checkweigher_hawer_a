@@ -11,9 +11,10 @@
 #define REJECTION_SIGNAL_PIN    7
 
 #define BAUD_RATE               9600
-#define READ_DELAY_MS           10
+#define READ_DELAY_MS           100
 #define REJECTION_DELAY_MS      500
 #define TARE_DELAY_MS           2000
+#define READ_WEIGHT_TIMEOUT_MS  150
 
 #define STX                     0x02
 #define ETX                     0x03
@@ -22,12 +23,15 @@
 #define RELAY_OFF               HIGH
 
 float tare = 0;
+float emptyBagWeight = 0.12;
 float targetWeight = 25.0;
 float tolerance = 0.5;
 bool bagWeighed = false;
 bool rejectionConfirmed = false;
 unsigned long endSensorTrippedTime = 0;
 bool endSensorTrippedTiming = false;
+float weight;
+bool weightError;
 
 class WeightReader {
 public:
@@ -37,11 +41,13 @@ public:
     }
 
     bool readWeight(float &weight, bool &weightError) {
+        unsigned long startMillis = millis();
+
         while (serial.available()) {
             serial.read();
         }
 
-        while (true) {
+        while (millis() - startMillis < READ_WEIGHT_TIMEOUT_MS) {
             if (serial.available() >= 12) {
                 if (parseWeightData(weight)) {
                     weightError = false;
@@ -52,6 +58,9 @@ public:
                 }
             }
         }
+
+        weightError = true;
+        return false;
     }
 
 private:
@@ -127,7 +136,7 @@ public:
     }
 
     bool isEndSensorTrippedLast() const {
-        return endSensorTrippedLast;
+        return endSensorTrippedLast && !endSensorTripped;
     }
 
 private:
@@ -201,13 +210,9 @@ void setup() {
 }
 
 void loop() {
-    float weight;
-    bool weightError;
-
     readAndProcessWeight(weight, weightError);
     sensorManager.update();
     handleSensors(weight);
-    delay(READ_DELAY_MS);
 }
 
 void readAndProcessWeight(float &weight, bool &weightError) {
@@ -234,7 +239,7 @@ void handleSensors(float weight) {
 }
 
 void processBagWeight(float weight) {
-    float bagWeight = weight - tare;
+    float bagWeight = weight - tare - emptyBagWeight;
     float weightDifference = abs(bagWeight - targetWeight);
 
     if (weightDifference > tolerance) {
@@ -244,19 +249,19 @@ void processBagWeight(float weight) {
             Serial.println(weightDifference);
             rejectionSystem.activate();
         } else {
+            Serial.println(F("Delay before rejection..."));
+            delay(READ_DELAY_MS);
             rejectionConfirmed = true;
         }
     } else {
         rejectionConfirmed = false;
-        bagWeighed = true;
     }
 
     if (!rejectionConfirmed) {
+        bagWeighed = true;
+        
         Serial.print(F("Tare: "));
         Serial.println(tare);
-
-        Serial.print(F("Weight shown: "));
-        Serial.println(weight);
 
         Serial.print(F("Bag weight: "));
         Serial.println(bagWeight);
