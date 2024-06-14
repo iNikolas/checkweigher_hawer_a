@@ -13,12 +13,21 @@
 #define BAUD_RATE               9600
 #define READ_DELAY_MS           10
 #define REJECTION_DELAY_MS      500
+#define TARE_DELAY_MS           2000
 
 #define STX                     0x02
 #define ETX                     0x03
 
 #define RELAY_ON                LOW
 #define RELAY_OFF               HIGH
+
+float tare = 0;
+float targetWeight = 25.0;
+float tolerance = 0.5;
+bool bagWeighed = false;
+bool rejectionConfirmed = false;
+unsigned long endSensorTrippedTime = 0;
+bool endSensorTrippedTiming = false;
 
 class WeightReader {
 public:
@@ -49,8 +58,7 @@ private:
     SoftwareSerial serial;
 
     bool parseWeightData(float &weight) {
-        char startByte = serial.read();
-        if (startByte != STX) return false;
+        if (serial.read() != STX) return false;
 
         char sign = serial.read();
         char weightString[7];
@@ -62,8 +70,7 @@ private:
         char decimalScale = serial.read();
         char xorHigh = serial.read();
         char xorLow = serial.read();
-        char endByte = serial.read();
-        if (endByte != ETX) return false;
+        if (serial.read() != ETX) return false;
 
         char checksum = sign;
         for (int i = 0; i < 6; i++) {
@@ -79,11 +86,9 @@ private:
         }
 
         weight = atof(weightString) / 100;
-
         if (decimalScale > 0 && decimalScale <= 4) {
             weight /= pow(10, decimalScale);
         }
-
         if (sign == '-') {
             weight = -weight;
         }
@@ -186,11 +191,6 @@ private:
     }
 };
 
-float tare = 0;
-float targetWeight = 25.0;
-float tolerance = 0.5;
-bool bagWeighed = false;
-
 WeightReader weightReader(SERIAL_RX_PIN, SERIAL_TX_PIN, BAUD_RATE);
 SensorManager sensorManager(BELT_START_SENSOR_PIN, BELT_MIDDLE_SENSOR_PIN, BELT_END_SENSOR_PIN);
 RejectionSystem rejectionSystem(REJECTION_SIGNAL_PIN);
@@ -204,34 +204,61 @@ void loop() {
     float weight;
     bool weightError;
 
-    weightReader.readWeight(weight, weightError);
-
+    readAndProcessWeight(weight, weightError);
     sensorManager.update();
+    handleSensors(weight);
+    delay(READ_DELAY_MS);
+}
 
+void readAndProcessWeight(float &weight, bool &weightError) {
+    weightReader.readWeight(weight, weightError);
+}
+
+void handleSensors(float weight) {
     if (sensorManager.isEndSensorTrippedLast()) {
-        tare = weight;
+        if (!endSensorTrippedTiming) {
+            endSensorTrippedTiming = true;
+            endSensorTrippedTime = millis();
+        } else if (millis() - endSensorTrippedTime >= TARE_DELAY_MS) {
+            tare = weight;
+        }
+    } else {
+        endSensorTrippedTiming = false;
     }
 
     if (sensorManager.isMiddleSensorTripped() && !bagWeighed) {
+        processBagWeight(weight);
+    } else {
+        bagWeighed = sensorManager.isMiddleSensorTripped();
+    }
+}
+
+void processBagWeight(float weight) {
+    float bagWeight = weight - tare;
+    float weightDifference = abs(bagWeight - targetWeight);
+
+    if (weightDifference > tolerance) {
+        if (rejectionConfirmed) {
+            rejectionConfirmed = false;
+            Serial.print(F("Rejected: "));
+            Serial.println(weightDifference);
+            rejectionSystem.activate();
+        } else {
+            rejectionConfirmed = true;
+        }
+    } else {
+        rejectionConfirmed = false;
+        bagWeighed = true;
+    }
+
+    if (!rejectionConfirmed) {
         Serial.print(F("Tare: "));
         Serial.println(tare);
 
         Serial.print(F("Weight shown: "));
         Serial.println(weight);
 
-        float bagWeight = weight - tare;
-
         Serial.print(F("Bag weight: "));
         Serial.println(bagWeight);
-
-        if (abs(bagWeight - targetWeight) > tolerance) {
-            Serial.print(F("Rejected: "));
-            Serial.println(abs(bagWeight - targetWeight));
-            rejectionSystem.activate();
-        }
     }
-
-    bagWeighed = sensorManager.isMiddleSensorTripped();
-
-    delay(READ_DELAY_MS);
 }
