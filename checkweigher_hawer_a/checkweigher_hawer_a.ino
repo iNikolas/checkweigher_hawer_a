@@ -11,10 +11,12 @@
 #define REJECTION_SIGNAL_PIN    7
 
 #define BAUD_RATE               9600
-#define READ_DELAY_MS           100
+#define READ_DELAY_MS           200
 #define REJECTION_DELAY_MS      500
-#define TARE_DELAY_MS           2000
+#define TARE_DELAY_MS           100
+#define CONFIRM_TARE_DELAY_MS   5000
 #define READ_WEIGHT_TIMEOUT_MS  150
+#define TARE_DIFFERENCE_KG      0.1
 
 #define STX                     0x02
 #define ETX                     0x03
@@ -28,7 +30,9 @@ float targetWeight = 25.0;
 float tolerance = 0.5;
 bool bagWeighed = false;
 bool rejectionConfirmed = false;
+bool tareConfirmed = false;
 unsigned long endSensorTrippedTime = 0;
+unsigned long tareConfirmedTime = 0;
 bool endSensorTrippedTiming = false;
 float weight;
 bool weightError;
@@ -225,10 +229,34 @@ void handleSensors(float weight) {
             endSensorTrippedTiming = true;
             endSensorTrippedTime = millis();
         } else if (millis() - endSensorTrippedTime >= TARE_DELAY_MS) {
-            tare = weight;
+            float tareDifference = abs(tare - weight);
+
+            if (tareDifference <= TARE_DIFFERENCE_KG) {
+                tare = weight;
+                tareConfirmed = false;
+            } else {
+                if (tareConfirmed) {
+                  if ((millis() - tareConfirmedTime) > CONFIRM_TARE_DELAY_MS) {
+                      tare = weight;
+                      tareConfirmed = false;
+                  }
+                } else {
+                  tareConfirmed = true;
+                  tareConfirmedTime = millis();
+                  Serial.print(F("Tare abnormal: "));
+                  Serial.print(weight);
+                  Serial.print(F("kg. Previous tare: "));
+                  Serial.print(tare);
+                  Serial.print(F("kg. Skipped..."));
+                  Serial.print(F(" Difference: "));
+                  Serial.print(tareDifference);
+                  Serial.println(F("kg."));
+                }
+            }
         }
     } else {
         endSensorTrippedTiming = false;
+        tareConfirmed = false;
     }
 
     if (sensorManager.isMiddleSensorTripped() && !bagWeighed) {
@@ -245,9 +273,14 @@ void processBagWeight(float weight) {
     if (weightDifference > tolerance) {
         if (rejectionConfirmed) {
             rejectionConfirmed = false;
-            Serial.print(F("Rejected: "));
-            Serial.println(weightDifference);
-            rejectionSystem.activate();
+
+            if (!weightError) {
+                Serial.print(F("Rejected: "));
+                Serial.println(weightDifference);
+                rejectionSystem.activate();
+            } else {
+                Serial.println(F("Due to weighing Error Rejection was skipped."));
+            }
         } else {
             Serial.println(F("Delay before rejection..."));
             delay(READ_DELAY_MS);
