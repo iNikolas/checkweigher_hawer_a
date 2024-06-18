@@ -32,6 +32,7 @@ bool bagWeighed = false;
 bool rejectionConfirmed = false;
 bool tareConfirmed = false;
 unsigned long endSensorTrippedTime = 0;
+unsigned long rejectionConfirmedTime = 0;
 unsigned long tareConfirmedTime = 0;
 bool endSensorTrippedTiming = false;
 float weight;
@@ -243,14 +244,6 @@ void handleSensors(float weight) {
                 } else {
                   tareConfirmed = true;
                   tareConfirmedTime = millis();
-                  Serial.print(F("Tare abnormal: "));
-                  Serial.print(weight);
-                  Serial.print(F("kg. Previous tare: "));
-                  Serial.print(tare);
-                  Serial.print(F("kg. Skipped..."));
-                  Serial.print(F(" Difference: "));
-                  Serial.print(tareDifference);
-                  Serial.println(F("kg."));
                 }
             }
         }
@@ -272,18 +265,15 @@ void processBagWeight(float weight) {
 
     if (weightDifference > tolerance) {
         if (rejectionConfirmed) {
-            rejectionConfirmed = false;
-
-            if (!weightError) {
+            if ((millis() - rejectionConfirmedTime) > READ_DELAY_MS) {
+                rejectionConfirmed = false;
                 Serial.print(F("Rejected: "));
                 Serial.println(weightDifference);
                 rejectionSystem.activate();
-            } else {
-                Serial.println(F("Due to weighing Error Rejection was skipped."));
             }
         } else {
             Serial.println(F("Delay before rejection..."));
-            delay(READ_DELAY_MS);
+            rejectionConfirmedTime = millis();
             rejectionConfirmed = true;
         }
     } else {
